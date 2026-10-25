@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>UMBRAL — Una experiencia interactiva</title>
+<meta name="description" content="Experiencia audiovisual interactiva sobre la identidad digital. Cámara, voz, gestos y filtros en tiempo real.">
+<meta name="theme-color" content="#020502">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap');
+*{box-sizing:border-box}
+html{background:#020502}
+body{margin:0;min-height:100vh;background:#020502;color:#a5ff92;font-family:'Silkscreen','Courier New',monospace;}
+.shell{width:min(96vw,1100px);margin:0 auto;padding:22px 0 28px;}
+header{text-align:center;margin:0 auto 16px;width:100%;}
+h1{margin:0;color:#aeff91;font-weight:700;font-size:clamp(3.5rem,14.2vw,10.8rem);letter-spacing:-.085em;line-height:1.05;text-shadow:0 0 24px #3aff4233;white-space:nowrap;}
+.subtitle{display:block;color:#82cd76;font-size:clamp(10px,1.55vw,18px);letter-spacing:.17em;margin-top:12px;}
+.screen{margin-top:24px;position:relative;aspect-ratio:16/9;border:1px solid #357b37;background:#020802;box-shadow:0 0 0 4px #071207,0 15px 65px #000;overflow:hidden;}
+.screen canvas{display:block;width:100%;height:100%;object-fit:contain;image-rendering:pixelated;}
+.screen:after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(to bottom,transparent 0 3px,rgba(0,0,0,.12) 4px 5px);opacity:.36;}
+.tag{position:absolute;top:13px;left:14px;color:#b4ffad;font-size:10px;letter-spacing:.08em;text-shadow:0 1px 4px #000;}
+.bottom{display:flex;justify-content:center;gap:9px;align-items:center;margin-top:19px;flex-wrap:wrap;}
+button{border:1px solid #438e42;background:#051105;color:#a5ff92;padding:12px 15px;cursor:pointer;font-family:inherit;font-weight:700;letter-spacing:.025em;font-size:10px;}
+button:hover,button:focus-visible{background:#153a17;outline:1px solid #6ccf66;}
+.meter{width:70px;height:5px;background:#163619;}
+.fill{height:100%;width:0;background:#a5ff92;transition:width .08s;}
+.tiny{font-size:9px;color:#86b982;}
+.status{text-align:center;font-size:9px;color:#7dba76;min-height:18px;line-height:1.7;margin:13px auto;}
+.reflection{margin:25px auto 8px;text-align:center;font-size:clamp(12px,2.1vw,20px);color:#a5ff92;letter-spacing:.02em;}
+video{display:none}
+button{touch-action:manipulation}
+.screen canvas{position:absolute;inset:0}
+.status{max-width:65ch}
+@media (prefers-reduced-motion: reduce){.screen:after{opacity:.15}}
+@media(max-width:600px){.shell{width:94vw;padding-top:20px;}h1{font-size:clamp(2.7rem,14vw,6rem)}.screen{aspect-ratio:16/9}.subtitle{letter-spacing:.025em}.bottom{gap:7px}button{padding:11px 9px;font-size:9px;flex:1 1 125px;min-height:44px}.meter{width:56px}.tag{font-size:8px}.status{font-size:8px}.reflection{line-height:1.5}.reflection{margin-top:26px;}}
+</style>
+</head>
+<body>
+<main class="shell">
+<header><h1>UMBRAL</h1><span class="subtitle">UNA EXPERIENCIA INTERACTIVA</span></header>
+<div class="screen"><canvas id="screen" width="640" height="360"></canvas><span class="tag">● REC / TRACKING</span></div>
+<div class="bottom">
+<button id="start" type="button">▶ INICIAR</button><button id="reset" type="button">↺ REINICIAR</button>
+<button id="audio" type="button">MIC: ON</button><button id="simulate" type="button">◉ SIMULAR VOZ</button><button id="beauty" type="button" title="Prueba maquillaje sin mostrar la palma">FILTRO: PALMA</button><button id="fistTest" type="button" title="Prueba la transformación sin mostrar el puño">PUÑO: TEST</button>
+<span class="tiny">VOZ</span><div class="meter"><div class="fill" id="fill"></div></div>
+<span class="tiny">ROSTRO</span><div class="meter"><div class="fill" id="gestureFill"></div></div>
+</div>
+<p class="status" id="status">ESPACIO: VOZ · BOCA: OJOS · CABEZA: FANTASMAS · PALMA: BELLEZA · PUÑO: MULTIPLICACIÓN</p>
+<p class="reflection">¿Quiénes somos detrás de esa pantalla?</p>
+<p class="status">La cámara se procesa en tu dispositivo. No se guardan vídeos en esta página.</p>
+<video id="video" autoplay muted playsinline></video>
+</main>
+<script>
+const video=document.getElementById('video');
+const canvas=document.getElementById('screen');
+const ctx=canvas.getContext('2d',{willReadFrequently:true});
+const statusText=document.getElementById('status');
+const fill=document.getElementById('fill');
+const gestureFill=document.getElementById('gestureFill');
+gestureFill.style.background='#68c75f';
+let stream, micStream, audioContext, analyser, samples, micOn=true, running=false;
+let volume=0, micVolume=0, manualVolume=0, simulandoVoz=false;
+let vozSuave=0, bocaSuave=0, movimientoSuave=0, colapsoDuracion=0, maquillajeSuave=0, punioSuave=0;
+let beautyManual=false, fistManual=false;
+const botonPunio=document.getElementById("fistTest");
+botonPunio.onclick=()=>{fistManual=!fistManual;botonPunio.textContent=fistManual?"PUÑO: ACTIVO":"PUÑO: TEST";botonPunio.setAttribute("aria-pressed",String(fistManual));};
+const botonBeauty=document.getElementById("beauty");
+botonBeauty.onclick=()=>{beautyManual=!beautyManual;botonBeauty.textContent=beautyManual?"FILTRO: FIJO ON":"FILTRO: PALMA";botonBeauty.setAttribute("aria-pressed",String(beautyManual));};
+// La voz afecta a la información; los gestos modifican el rostro.
+
+// La barra espaciadora funciona incluso después de pulsar INICIAR.
+// Solo ignoramos la tecla si el usuario está escribiendo en un campo de texto.
+function teclaEspacio(event){
+ const elemento=event.target;
+ if (elemento && (elemento.tagName==='INPUT'||elemento.tagName==='TEXTAREA'||elemento.isContentEditable)) return;
+ if(event.code==='Space'){
+  event.preventDefault();
+  simulandoVoz=(event.type==='keydown');
+  actualizarIndicador();
+ }
+}
+document.addEventListener('keydown',teclaEspacio);
+document.addEventListener('keyup',teclaEspacio);
+window.addEventListener('blur',()=>{simulandoVoz=false;actualizarIndicador();});
+const botonSimular=document.getElementById('simulate');
+function actualizarIndicador(){
+ botonSimular.textContent=simulandoVoz?'● VOZ ACTIVA':'◉ SIMULAR VOZ';
+ botonSimular.style.borderColor=simulandoVoz?'#a5ff92':'#438e42';
+}
+// Alternativa para probar sin teclado: mantener pulsado este botón.
+botonSimular.addEventListener('pointerdown',e=>{
+ e.preventDefault();botonSimular.setPointerCapture(e.pointerId);
+ simulandoVoz=true;actualizarIndicador();
+});
+for(const tipo of ['pointerup','pointercancel','lostpointercapture']){
+ botonSimular.addEventListener(tipo,()=>{simulandoVoz=false;actualizarIndicador();});
+}
+
+// Buffer reutilizable para la pixelación (no se crea en cada fotograma).
+const buffer=document.createElement('canvas');
+buffer.width=320;buffer.height=180;
+const b=buffer.getContext('2d');
+const caraPixel=document.createElement('canvas');
+
+// Textura pequeña de grano: reutilizamos un canvas para evitar cargar la CPU.
+const grano=document.createElement('canvas');grano.width=160;grano.height=90;
+const granoCtx=grano.getContext('2d');
+let fotogramaGrano=0;
+function dibujarGrano(w,h){
+ if((fotogramaGrano++%4)===0){
+  const imagen=granoCtx.createImageData(160,90);
+  for(let i=0;i<imagen.data.length;i+=4){
+   const v=Math.floor(Math.random()*150)+55;
+   imagen.data[i]=v*.6;imagen.data[i+1]=v;imagen.data[i+2]=v*.6;
+   imagen.data[i+3]=Math.floor(Math.random()*28);
+  }
+  granoCtx.putImageData(imagen,0,0);
+ }
+ ctx.save();ctx.imageSmoothingEnabled=false;ctx.globalAlpha=.22;
+ ctx.drawImage(grano,0,0,w,h);ctx.restore();
+}
+
+// Retoque de proporciones con muestreo de imagen.
+// Ajustes locales de la imagen:
+// contorno, nariz y labios.
+// Trabaja sobre una copia del fotograma.
+function deformarRostro(puntos, fuerza){
+ if(!puntos || fuerza<0.025)return;
+ const W=buffer.width,H=buffer.height;
+ const coord=(i)=>({x:(1-puntos[i].x)*W,y:puntos[i].y*H});
+ const barbilla=coord(152), frente=coord(10), izquierdo=coord(234), derecho=coord(454);
+ const centroX=(izquierdo.x+derecho.x)/2;
+ const ancho=Math.abs(derecho.x-izquierdo.x);
+ const alto=Math.abs(barbilla.y-frente.y);
+ if(ancho<25 || alto<35)return;
+ const narizIzq=coord(98),narizDer=coord(327),narizCentro=coord(1);
+ const bocaIzq=coord(61), bocaDer=coord(291), labioArriba=coord(0), labioAbajo=coord(17);
+ const labioCentro={x:(bocaIzq.x+bocaDer.x)/2,y:(labioArriba.y+labioAbajo.y)/2};
+ const radioLabiosX=Math.max(7,Math.abs(bocaDer.x-bocaIzq.x)*.63);
+ const radioLabiosY=Math.max(5,Math.abs(labioAbajo.y-labioArriba.y)*1.2+2);
+ const src=b.getImageData(0,0,W,H);
+ const dst=b.createImageData(W,H);dst.data.set(src.data);
+ const inRange=(v,a,c)=>Math.exp(-0.5*((v-a)/c)**2);
+ const xMin=Math.max(0,Math.floor(Math.min(izquierdo.x,derecho.x)-ancho*.25));
+ const xMax=Math.min(W-1,Math.ceil(Math.max(izquierdo.x,derecho.x)+ancho*.25));
+ const yMin=Math.max(0,Math.floor(frente.y-9));
+ const yMax=Math.min(H-1,Math.ceil(barbilla.y+8));
+ // Intensidad intencionadamente moderada: las capas deben parecer un filtro, no un glitch.
+ for(let y=yMin;y<=yMax;y++)for(let x=xMin;x<=xMax;x++){
+   let sx=x,sy=y;
+   // Afinado de ambas mejillas: los pixeles se toman desde el exterior.
+   for(const p of [izquierdo,derecho]){
+     const haciaCentro=Math.sign(centroX-p.x);
+     const nuevaX=p.x+haciaCentro*ancho*.075*fuerza;
+     const peso=inRange(x,nuevaX,ancho*.19)*inRange(y,p.y,alto*.32);
+     sx-=haciaCentro*ancho*.075*fuerza*peso;
+   }
+   // Afinado de nariz: disminuye la anchura en la zona de las aletas.
+   for(const p of [narizIzq,narizDer]){
+     const haciaCentro=Math.sign(narizCentro.x-p.x);
+     const nuevaX=p.x+haciaCentro*ancho*.042*fuerza;
+     const peso=inRange(x,nuevaX,ancho*.09)*inRange(y,p.y,alto*.14);
+     sx-=haciaCentro*ancho*.042*fuerza*peso;
+   }
+   // Aumento de labios: muestreamos una zona mas pequeña y la expandimos.
+   const dx=(x-labioCentro.x)/radioLabiosX,dy=(y-labioCentro.y)/radioLabiosY;
+   const dist=dx*dx+dy*dy;
+   if(dist<4){
+     const peso=Math.exp(-1.15*dist);
+     const escala=1+fuerza*.42*peso;
+     sx=labioCentro.x+(sx-labioCentro.x)/escala;
+     sy=labioCentro.y+(sy-labioCentro.y)/escala;
+   }
+   // Muestreo bilineal: suaviza los contornos y evita bordes de bloques enormes.
+   sx=Math.max(0,Math.min(W-1.001,sx));sy=Math.max(0,Math.min(H-1.001,sy));
+   const x0=Math.floor(sx),y0=Math.floor(sy),fx=sx-x0,fy=sy-y0;
+   const x1=Math.min(W-1,x0+1),y1=Math.min(H-1,y0+1);
+   const i00=(y0*W+x0)*4,i10=(y0*W+x1)*4,i01=(y1*W+x0)*4,i11=(y1*W+x1)*4;
+   const o=(y*W+x)*4;
+   for(let c=0;c<3;c++){
+    const a=src.data[i00+c]*(1-fx)+src.data[i10+c]*fx;
+    const z=src.data[i01+c]*(1-fx)+src.data[i11+c]*fx;
+    dst.data[o+c]=a*(1-fy)+z*fy;
+   }
+ }
+ b.putImageData(dst,0,0);
+}
+
+function draw(){
+ requestAnimationFrame(draw);
+ const w=canvas.width,h=canvas.height;
+ ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
+ ctx.fillStyle='#060a12';ctx.fillRect(0,0,w,h);
+ // Micrófono y teclado se calculan aunque la cámara aún no esté activa.
+ // Micrófono: calcula intensidad sin interferir con el teclado.
+ if(analyser&&micOn){
+  analyser.getByteTimeDomainData(samples);
+  let sum=0;
+  for(const sample of samples){const n=(sample-128)/128;sum+=n*n;}
+  const rms=Math.sqrt(sum/samples.length);
+  micVolume=micVolume*.8+Math.min(1,rms*8)*.2;
+ }else{micVolume*=.85;}
+
+ // Barra espaciadora: sube progresivamente hasta el 100%.
+ if(simulandoVoz){manualVolume=Math.min(1,manualVolume+0.012);}
+ else{manualVolume=Math.max(0,manualVolume-0.017);}
+ // VOZ controla solo glitches, notificaciones y sobrecarga.
+ const vozObjetivo=Math.max(micVolume,manualVolume);
+ vozSuave+=(vozObjetivo-vozSuave)*(vozObjetivo>vozSuave?0.045:0.07);
+ volume=vozSuave;
+ // ROSTRO controla solo los ojos y la máscara; MOVIMIENTO, los fantasmas.
+ const bocaObjetivo=window.gestureIntensity||0;
+ const movimientoObjetivo=window.faceMovement||0;
+ bocaSuave+=(bocaObjetivo-bocaSuave)*0.09;
+ movimientoSuave+=(movimientoObjetivo-movimientoSuave)*0.09;
+ fill.style.width=Math.round(volume*100)+'%';
+ gestureFill.style.width=Math.round(Math.max(bocaSuave,movimientoSuave)*100)+'%';
+ if(!running||video.readyState<2){
+  ctx.fillStyle='#92a6c6';ctx.textAlign='center';ctx.font='15px monospace';
+  ctx.fillText('AWAITING SIGNAL...',w/2,h/2-14);
+  ctx.fillText('VOICE '+String(Math.round(volume*100)).padStart(3,'0')+'%',w/2,h/2+16);
+  if(volume>0.25){ctx.fillStyle='#9ebeff';for(let i=0;i<Math.floor(volume*12);i++)ctx.fillRect(Math.random()*w,Math.random()*h,40+Math.random()*80,2+Math.random()*6);}
+  return;
+ }
+
+ // Cámara reflejada y pixelada.
+ b.setTransform(1,0,0,1,0,0);b.clearRect(0,0,320,180);
+ b.translate(320,0);b.scale(-1,1);b.drawImage(video,0,0,320,180);
+ // El filtro es reversible: retirar la palma devuelve la imagen natural.
+ const maquillajeActivo=!!window.palmOpen || beautyManual;
+ maquillajeSuave+=(Number(maquillajeActivo)-maquillajeSuave)*0.085;
+ if(maquillajeSuave>0.025)deformarRostro(window.faceMakeupPoints,maquillajeSuave);
+ ctx.imageSmoothingEnabled=false;ctx.drawImage(buffer,0,0,w,h);
+ // Color de monitor antiguo: tinte tenue, sin ocultar la imagen.
+ ctx.save();
+ ctx.globalCompositeOperation='multiply';ctx.globalAlpha=0.18;
+ ctx.fillStyle='#80c68a';ctx.fillRect(0,0,w,h);
+ ctx.restore();
+
+ 
+ // FILTRO A: OJOS ARTIFICIALES (sobre el vídeo reflejado)
+ // Las posiciones faciales vienen de MediaPipe en coordenadas 640x360.
+ const ojos = window.faceEyes;
+ const rostroActual = window.faceBox;
+ const intensidad = bocaSuave;
+ if (ojos && rostroActual && intensidad > 0.06) {
+  const aumento = 1 + intensidad * 0.85;
+  const radio = Math.max(9, rostroActual.ancho * 0.145);
+  for (const ojo of ojos) {
+   ctx.save();
+   ctx.beginPath();
+   ctx.ellipse(ojo.x, ojo.y, radio, radio * 0.72, 0, 0, Math.PI * 2);
+   ctx.clip();
+   // Ampliamos la imagen reflejada tomando una zona más pequeña del buffer.
+   // buffer: 320x180; pantalla: 640x360.
+   const rx = radio / aumento;
+   const ry = radio * 0.72 / aumento;
+   const sx = (ojo.x - rx) / 2;
+   const sy = (ojo.y - ry) / 2;
+   const sw = rx;
+   const sh = ry;
+   if (sx >= 0 && sy >= 0 && sx + sw <= buffer.width && sy + sh <= buffer.height) {
+    ctx.drawImage(buffer, sx, sy, sw, sh,
+      ojo.x - radio, ojo.y - radio * 0.72, radio * 2, radio * 1.44);
+   }
+   ctx.restore();
+  }
+ }
+
+ // MAQUILLAJE V7: sombras difuminadas, colorete y labios siguiendo la anatomía.
+ // Los colores son deliberadamente piel/rosa/ciruela; el tinte verde de cámara permanece suave.
+ const puntosMaquillaje=window.faceMakeupPoints;
+ if (puntosMaquillaje && maquillajeSuave>0.02) {
+  const P=id=>({x:(1-puntosMaquillaje[id].x)*w,y:puntosMaquillaje[id].y*h});
+  const difuminar=(centro,rx,ry,r,g,b,opacidad)=>{
+   ctx.save();ctx.translate(centro.x,centro.y);ctx.scale(rx,ry);
+   const grad=ctx.createRadialGradient(0,0,.05,0,0,1);
+   grad.addColorStop(0,`rgba(${r},${g},${b},${opacidad*maquillajeSuave})`);
+   grad.addColorStop(.48,`rgba(${r},${g},${b},${opacidad*.48*maquillajeSuave})`);
+   grad.addColorStop(1,`rgba(${r},${g},${b},0)`);
+   ctx.fillStyle=grad;ctx.beginPath();ctx.arc(0,0,1,0,Math.PI*2);ctx.fill();ctx.restore();
+  };
+  const eyePairs=[[33,133,159,145],[362,263,386,374]];
+  // Sombras sobre los párpados; no se dibujan polígonos opacos.
+  for(const [a,z,top,bottom] of eyePairs){
+   const p=P(a),q=P(z),up=P(top),lo=P(bottom);
+   const cx=(p.x+q.x)/2, cy=up.y-4;
+   const rx=Math.hypot(q.x-p.x,q.y-p.y)*.67;
+   difuminar({x:cx,y:cy},rx,Math.max(8,Math.abs(lo.y-up.y)*1.65),111,51,83,.38);
+   // Delineado fino a lo largo de los dos extremos del párpado superior.
+   ctx.save();ctx.strokeStyle=`rgba(58,23,47,${maquillajeSuave*.68})`;
+   ctx.lineWidth=1.35;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(p.x,p.y);
+   ctx.quadraticCurveTo(up.x,up.y-3,q.x,q.y);ctx.stroke();ctx.restore();
+  }
+  // Colorete con bordes degradados; se adapta al tamaño real del rostro.
+  const mejillaIzq=P(117),mejillaDer=P(346),ojoIzq=P(33),ojoDer=P(263);
+  const anchoReferencia=Math.max(30,Math.abs(ojoIzq.x-ojoDer.x));
+  for(const c of [mejillaIzq,mejillaDer])difuminar(c,anchoReferencia*.26,anchoReferencia*.17,188,88,105,.34);
+  // Labial: contorno preciso de los labios y recorte de la abertura de la boca.
+  const labioExt=[61,40,37,0,267,270,291,321,314,17,84,91];
+  const labioInt=[78,81,13,311,308,402,14,178];
+  ctx.save();ctx.beginPath();
+  for(const [i,id] of labioExt.entries()){const p=P(id);if(i===0)ctx.moveTo(p.x,p.y);else ctx.lineTo(p.x,p.y);}ctx.closePath();
+  for(const [i,id] of labioInt.entries()){const p=P(id);if(i===0)ctx.moveTo(p.x,p.y);else ctx.lineTo(p.x,p.y);}ctx.closePath();
+  ctx.fillStyle=`rgba(152,50,80,${maquillajeSuave*.43})`;ctx.fill('evenodd');
+  ctx.restore();
+  // Brillo leve sobre el labio inferior, no sobre toda la cara.
+  const labioBrillo=P(17);difuminar({x:labioBrillo.x,y:labioBrillo.y-3},anchoReferencia*.14,3,255,192,178,.17);
+ }
+
+ // Puño: pixelación local y retratos con diferentes tratamientos de imagen.
+ const objetivoPunio=!!window.fistClosed || fistManual;
+ punioSuave+=(Number(objetivoPunio)-punioSuave)*0.09;
+ if(rostroActual && punioSuave>0.035){
+  const cara=rostroActual;
+  const x=Math.max(0,Math.floor(cara.x)), y=Math.max(0,Math.floor(cara.y));
+  const cw=Math.min(w-x,Math.ceil(cara.ancho)), ch=Math.min(h-y,Math.ceil(cara.alto));
+  if(cw>15&&ch>15){
+   // Pixelar solo la región facial. Fuente: fotograma reflejado de baja resolución.
+   const escala=1-punioSuave*.88;
+   const pixelW=Math.max(7,Math.round(cw*escala/8));
+   const pixelH=Math.max(7,Math.round(ch*escala/8));
+   caraPixel.width=pixelW;caraPixel.height=pixelH;
+   const cp=caraPixel.getContext('2d');cp.clearRect(0,0,pixelW,pixelH);
+   cp.drawImage(buffer,x/2,y/2,cw/2,ch/2,0,0,pixelW,pixelH);
+   ctx.save();ctx.imageSmoothingEnabled=false;
+   ctx.globalAlpha=Math.min(1,punioSuave*1.7);ctx.drawImage(caraPixel,0,0,pixelW,pixelH,x,y,cw,ch);
+   ctx.restore();
+   // El efecto se despliega escalonadamente, y las posiciones permanecen estables.
+   const cantidad=Math.min(12,Math.floor(punioSuave*12));
+   const t=performance.now()*.001;
+   const estilos=['contrast(185%) grayscale(1)','sepia(1) contrast(190%)','invert(1) contrast(170%)',
+      'saturate(250%) hue-rotate(110deg)','contrast(260%) brightness(145%)','grayscale(1) brightness(65%)',
+      'sepia(1) hue-rotate(65deg) contrast(190%)','invert(1) hue-rotate(160deg)','contrast(230%) saturate(0)'];
+   ctx.save();
+   for(let i=0;i<cantidad;i++){
+    const col=i%4, fila=Math.floor(i/4);
+    const anchoRetrato=105+(i%3)*9,altoRetrato=112+(i%2)*12;
+    const xx=8+col*149+Math.sin(t*.7+i*1.7)*5;
+    const yy=19+fila*110+Math.cos(t*.6+i*2)*4;
+    const deformX=1+(i%4-1.5)*.17, deformY=1+(i%3-1)*.14;
+    ctx.save();ctx.translate(xx+anchoRetrato/2,yy+altoRetrato/2);
+    ctx.rotate((i%5-2)*.045*punioSuave);
+    ctx.globalAlpha=.3+punioSuave*.63;
+    ctx.fillStyle='rgba(1,8,3,.86)';ctx.fillRect(-anchoRetrato/2-3,-altoRetrato/2-3,anchoRetrato+6,altoRetrato+6);
+    ctx.beginPath();ctx.rect(-anchoRetrato/2,-altoRetrato/2,anchoRetrato,altoRetrato);ctx.clip();
+    ctx.filter=estilos[i%estilos.length];ctx.imageSmoothingEnabled=(i%3!==0);
+    ctx.drawImage(buffer,x/2,y/2,cw/2,ch/2,
+     -anchoRetrato*deformX/2 +Math.sin(t*2+i)*3,-altoRetrato*deformY/2,
+     anchoRetrato*deformX,altoRetrato*deformY);
+    ctx.filter='none';
+    // Versiones: interferencia, posterización cromática o fragmentos desplazados.
+    if(i%3===1){ctx.globalCompositeOperation='screen';ctx.globalAlpha=.25*punioSuave;
+     ctx.filter='hue-rotate(130deg) contrast(220%)';ctx.drawImage(buffer,x/2,y/2,cw/2,ch/2,
+     -anchoRetrato/2+7,-altoRetrato/2,anchoRetrato,altoRetrato);ctx.filter='none';ctx.globalCompositeOperation='source-over';}
+    if(i%3===2){ctx.fillStyle='rgba(141,255,138,.25)';for(let j=0;j<5;j++)ctx.fillRect(-anchoRetrato/2,(j*23+t*9)%altoRetrato-altoRetrato/2,anchoRetrato,2);}
+    ctx.restore();
+    ctx.save();ctx.globalAlpha=punioSuave*.8;ctx.strokeStyle='#92ff90';ctx.lineWidth=.8;
+    ctx.strokeRect(xx-3,yy-3,anchoRetrato+6,altoRetrato+6);
+    ctx.font='9px monospace';ctx.fillStyle='#b7ffb4';ctx.fillText('ID_'+String(i+1).padStart(2,'0'),xx+4,yy+12);ctx.restore();
+   }
+   ctx.restore();
+   
+  }
+ }
+
+ // Ecos del rostro al detectar movimiento de cabeza.
+ if (rostroActual && movimientoSuave > 0.13) {
+  const fuerza = Math.min(1, (movimientoSuave - 0.13) / 0.87);
+  const tiempo = performance.now() * 0.001;
+  const numeroCopias = Math.floor(1 + fuerza * 2);
+  const x = rostroActual.x, y = rostroActual.y;
+  const ancho = rostroActual.ancho, alto = rostroActual.alto;
+  // Recorte seguro para los bordes del lienzo.
+  const cx = Math.max(0, x), cy = Math.max(0, y);
+  const cw = Math.min(w, x + ancho) - cx;
+  const ch = Math.min(h, y + alto) - cy;
+  if (cw > 1 && ch > 1) {
+   ctx.save();
+   for (let i = 0; i < numeroCopias; i++) {
+    const lado = i % 2 ? -1 : 1;
+    const dx = lado * (22 + fuerza * 80 + i * 13) + Math.sin(tiempo * 1.3 + i) * 12;
+    const dy = Math.cos(tiempo * 0.9 + i * 2) * (10 + fuerza * 20);
+    ctx.globalAlpha = 0.12 + fuerza * 0.10;
+    ctx.drawImage(buffer, cx / 2, cy / 2, cw / 2, ch / 2,
+      cx + dx, cy + dy, cw, ch);
+    ctx.strokeStyle = i % 2 ? '#86dfff' : '#a59aff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cx + dx, cy + dy, cw, ch);
+   }
+   ctx.restore();
+  }
+ }
+
+ // Interferencias horizontales.
+ if(volume>0.05){
+  const cantidad=Math.floor(Math.max(0,volume-0.15)*8);
+  for(let i=0;i<cantidad;i++){
+   const y=Math.random()*h,altura=Math.random()*12+2;
+   const desplazamiento=(Math.random()-.5)*volume*150;
+   ctx.drawImage(canvas,0,y,w,altura,desplazamiento,y,w,altura);
+  }
+ }
+
+ // Distorsión cromática y desplazamientos.
+ const power=Math.round(Math.max(0,volume-0.18)*16);
+ if(power>1){
+  for(let i=0;i<Math.round(2+volume*8);i++){
+   const y=Math.random()*h,band=2+Math.random()*22;
+   const shift=(Math.random()-.5)*power*2;
+   ctx.drawImage(canvas,0,y,w,band,shift,y,w,band);
+  }
+  ctx.globalCompositeOperation='screen';ctx.globalAlpha=Math.min(.12,volume*.18);
+  ctx.drawImage(canvas,-power,0,w,h);
+  ctx.fillStyle='#326c31';ctx.fillRect(0,0,w,h);
+  ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
+ }
+
+ // Las antiguas copias del vídeo completo se desactivan para no tapar los ojos.
+ // Las copias fantasma ahora responden exclusivamente al movimiento del rostro.
+// SOBRESATURACION DE INFORMACION
+// Las redes sociales invaden nuestra identidad.
+
+if (volume > 0.40) {
+
+  const mensajes = [
+    "NUEVO SEGUIDOR",
+    "DILO TIA",
+    "999+ LIKES",
+    "TRENDING NOW",
+    "CAMBIA TU CARA",
+    "ESTAS SIENDO OBSERVAD@",
+    "NO ES SUFICIENTE",
+    "@666LOLXD HA EMPEZADO A SEGUIRTE",
+    "COMPARATE",
+    "ERROR: IDENTIDAD NO ENCONTRADA"
+  ];
+
+  // Cuanto mayor es el volumen, mas mensajes aparecen
+  const cantidad = Math.min(6,Math.floor((volume - 0.40) * 11));
+
+  ctx.save();
+
+  for (let i = 0; i < cantidad; i++) {
+
+    const ancho = 195;
+    const alto = 38;
+
+    // Posiciones distribuidas por la pantalla
+    const x = 12 + (i * 137) % (w - ancho - 12);
+    const y = 28 + (i * 73) % (h - alto - 45);
+
+    // Fondo oscuro de ventana retro
+    ctx.fillStyle = 'rgba(3, 19, 5, 0.87)';
+    ctx.fillRect(x, y, ancho, alto);
+
+    // Borde azul estilo PS2
+    ctx.strokeStyle = '#73ba65';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, ancho, alto);
+
+    // Barra superior
+    ctx.fillStyle = '#295a28';
+    ctx.fillRect(x, y, ancho, 6);
+
+    // Texto de la notificacion
+    ctx.font = '11px monospace';
+    ctx.fillStyle = '#b6f6ae';
+    ctx.textAlign = 'left';
+
+    ctx.fillText(
+      mensajes[i % mensajes.length],
+      x + 9,
+      y + 25
+    );
+
+  }
+
+  ctx.restore();
+}
+ ctx.fillStyle='#b6f6ae';ctx.font='12px monospace';ctx.textAlign='left';
+ // COLAPSO DIGITAL
+
+// La sobrecarga requiere voz alta sostenida: evita entrar en colapso de golpe.
+colapsoDuracion = volume > 0.84 ? Math.min(180, colapsoDuracion + 1) : Math.max(0, colapsoDuracion - 3);
+if (volume > 0.84 && colapsoDuracion > 70) {
+
+  ctx.save();
+
+  const caos = Math.max(0,Math.min(1,(volume - 0.84) / 0.16));
+
+  // Interferencias horizontales
+  for (let i = 0; i < caos * 10; i++) {
+
+    const y = Math.random() * h;
+
+    ctx.fillStyle = Math.random() > 0.5
+      ? '#70e26b'
+      : '#050816';
+
+    ctx.globalAlpha = Math.random() * 0.6;
+
+    ctx.fillRect(
+      0,
+      y,
+      w,
+      Math.random() * 8 + 1
+    );
+  }
+
+  // Parpadeos digitales ocasionales
+  if (Math.random() < caos * 0.025) {
+    ctx.fillStyle = 'rgba(130, 218, 135, 0.18)';
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  // Mensaje de colapso
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 24px monospace';
+  ctx.fillStyle = '#bdffb4';
+
+  ctx.fillText(
+    'SYSTEM OVERLOAD',
+    w / 2,
+    h / 2
+  );
+
+  ctx.restore();
+}
+ dibujarGrano(w,h);
+ ctx.save();ctx.fillStyle='#b6f6ae';ctx.font='12px monospace';ctx.textAlign='left';ctx.fillText('VOICE '+String(Math.round(volume*100)).padStart(3,'0')+'%  FACE '+String(Math.round(Math.max(bocaSuave,movimientoSuave)*100)).padStart(3,'0')+'%',14,h-16);ctx.restore();
+}
+
+async function start(){
+ if(running)return;
+ if(!navigator.mediaDevices?.getUserMedia){
+  statusText.textContent='La cámara necesita HTTPS o localhost y un navegador compatible.';
+  return;
+ }
+ try{
+  // La cámara puede funcionar aunque el equipo no tenga micrófono.
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false});
+  video.srcObject=stream;await video.play();
+  running=true;
+  document.getElementById('start').textContent='■ DETENER';
+  statusText.textContent='BOCA · CABEZA · PALMA · PUÑO · VOZ';
+  // El micrófono es opcional: si falla, seguimos con cámara y teclado.
+  try{
+   if (!micOn) return;
+   micStream=await navigator.mediaDevices.getUserMedia({audio:true});
+   audioContext=new (window.AudioContext||window.webkitAudioContext)();
+   const source=audioContext.createMediaStreamSource(micStream);
+   analyser=audioContext.createAnalyser();analyser.fftSize=1024;
+   samples=new Uint8Array(analyser.fftSize);source.connect(analyser);
+  }catch(error){
+   micOn=false;
+   document.getElementById('audio').textContent='MIC: OFF';
+   statusText.textContent='CÁMARA ACTIVA · Sin micrófono: ESPACIO simula voz · BOCA y CABEZA controlan filtros.';
+  }
+ }catch(e){statusText.textContent='No se pudo acceder a la cámara. Comprueba permisos y localhost. ('+e.name+')';}
+}
+async function detener() {
+  stream?.getTracks().forEach(track => track.stop());
+  micStream?.getTracks().forEach(track => track.stop());
+  stream = null;
+  micStream = null;
+  analyser = null;
+  samples = null;
+  if (audioContext) { await audioContext.close().catch(() => {}); audioContext = null; }
+  video.pause();
+  video.srcObject = null;
+  running = false;
+  window.faceBox = null;
+  window.faceEyes = null;
+  window.faceMakeupPoints = null;
+  window.palmOpen = false;
+  window.fistClosed = false;
+  document.getElementById('start').textContent = '▶ INICIAR';
+  statusText.textContent = 'CÁMARA DESACTIVADA';
+}
+document.getElementById('start').onclick = () => running ? detener() : start();
+document.getElementById('reset').onclick=()=>{
+ volume=0;manualVolume=0;micVolume=0;vozSuave=0;bocaSuave=0;movimientoSuave=0;colapsoDuracion=0;maquillajeSuave=0;punioSuave=0;simulandoVoz=false;beautyManual=false;fistManual=false;window.fistClosed=false;botonPunio.textContent='PUÑO: TEST';botonPunio.setAttribute('aria-pressed','false');botonBeauty.textContent='FILTRO: PALMA';botonBeauty.setAttribute('aria-pressed','false');actualizarIndicador();
+ fill.style.width='0%';gestureFill.style.width='0%';statusText.textContent=running?'SEÑAL REINICIADA':'Pulsa INICIAR para permitir la cámara.';
+};
+document.getElementById('audio').onclick=e=>{
+ micOn=!micOn;e.target.textContent='MIC: '+(micOn?'ON':'OFF');
+ if (micOn && running && !analyser) {
+  micOn=false; e.target.textContent='MIC: OFF';
+  statusText.textContent='Para activar el micrófono, detén y vuelve a iniciar.';
+ }
+};
+draw();
+</script> 
+<script type="module">
+import { FaceLandmarker, HandLandmarker, FilesetResolver }
+from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/vision_bundle.mjs";
+
+// Creamos una capa transparente sobre nuestra cámara
+const capa = document.createElement("canvas");
+capa.width = 640;
+capa.height = 360;
+capa.style.cssText =
+  "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;";
+
+document.querySelector(".screen").appendChild(capa);
+
+const pincel = capa.getContext("2d");
+
+let detector, detectorMano;
+window.palmOpen=false;window.fistClosed=false;
+window.faceMakeupPoints=null;
+
+// Cargamos el modelo facial
+async function prepararRostro() {
+  try {
+    const vision = await FilesetResolver.forVisionTasks(
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/wasm"
+);
+    detector = await FaceLandmarker.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath:
+          "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+        delegate: "CPU"
+      },
+      runningMode: "VIDEO",
+      numFaces: 1
+    });
+
+    console.log("Detector facial preparado");
+    // Modelo de manos: independiente, sin interrumpir el detector facial.
+    try {
+      detectorMano=await HandLandmarker.createFromOptions(vision,{
+        baseOptions:{
+          modelAssetPath:"https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate:"CPU"
+        },runningMode:"VIDEO",numHands:1
+      });
+      console.log("Detector de palma preparado");
+    }catch(error){console.warn("No se pudo cargar el detector de manos:",error);}
+
+  } catch (error) {
+    console.error("Error cargando MediaPipe:", error);
+  }
+}
+
+prepararRostro();
+
+let ultimoAnalisis = 0;
+let rostroCentroAnterior = null;
+let movimientoAnterior = 0;
+let framesPalma=0,framesPunio=0;
+window.faceMovement=0;
+
+function rastrearRostro() {
+  requestAnimationFrame(rastrearRostro);
+
+  if (!detector || video.readyState < 2 || !running) {
+    pincel.clearRect(0, 0, 640, 360);
+    return;
+  }
+
+  // Analizamos aproximadamente 10 veces por segundo
+  const ahora = performance.now();
+  if (ahora - ultimoAnalisis < (window.innerWidth < 650 ? 160 : 100)) return;
+  ultimoAnalisis = ahora;
+
+  const resultado = detector.detectForVideo(video, ahora);
+
+  pincel.clearRect(0, 0, 640, 360);
+ window.gestureIntensity = 0;
+ window.faceMovement = Math.max(0,(window.faceMovement||0)*0.90);
+ window.faceBox=null; window.faceEyes=null;window.faceMakeupPoints=null;
+ if (resultado.faceLandmarks.length > 0) {
+    const puntos = resultado.faceLandmarks[0];
+    window.faceMakeupPoints=puntos;
+    
+ // LOCALIZACIÓN DE LOS OJOS
+
+// Calculamos el centro aproximado de cada ojo
+function centroOjo(a, b) {
+  return {
+    x: (1 - (puntos[a].x + puntos[b].x) / 2) * 640,
+    y: ((puntos[a].y + puntos[b].y) / 2) * 360
+  };
+}
+
+window.faceEyes = [
+  centroOjo(33, 133),
+  centroOjo(362, 263)
+];
+
+
+ // APERTURA DE BOCA - CONTROL GESTUAL
+
+const labioSuperior = puntos[13];
+const labioInferior = puntos[14];
+
+// Calculamos la altura del rostro para
+// adaptar la medida a la distancia de la cámara.
+const alturaRostro = Math.abs(
+  puntos[152].y - puntos[10].y
+);
+
+// Distancia entre los labios
+const apertura = Math.abs(
+  labioInferior.y - labioSuperior.y
+) / Math.max(alturaRostro, 0.001);
+
+// Convertimos la apertura a una intensidad de 0 a 1
+const intensidadBoca = Math.max(
+  0,
+  Math.min(1, (apertura - 0.015) / 0.09)
+);
+
+// Compartimos el resultado con UMBRAL
+window.gestureIntensity = intensidadBoca;
+
+    // Calculamos los límites del rostro
+    const xs = puntos.map(p => (1 - p.x) * 640);
+    const ys = puntos.map(p => p.y * 360);
+
+    const x = Math.min(...xs);
+    const y = Math.min(...ys);
+    const ancho = Math.max(...xs) - x;
+    const alto = Math.max(...ys) - y;
+    // Coordenadas que comparten los filtros faciales.
+    window.faceBox = {x, y, ancho, alto};
+    // Movimiento lateral/vertical de la cabeza entre dos lecturas de MediaPipe.
+    // Normalizamos por tamaño de rostro para reducir la dependencia de la distancia.
+    const centroActual = { x: x + ancho/2, y: y + alto/2 };
+    if(rostroCentroAnterior){
+      const dx=(centroActual.x-rostroCentroAnterior.x)/Math.max(1,ancho);
+      const dy=(centroActual.y-rostroCentroAnterior.y)/Math.max(1,alto);
+      const velocidad=Math.hypot(dx,dy);
+      movimientoAnterior=movimientoAnterior*0.65+Math.min(1,Math.max(0,(velocidad-0.012)*9))*0.35;
+    }
+    rostroCentroAnterior=centroActual;
+    window.faceMovement=movimientoAnterior;
+
+    // Detector discreto: esquinas verdes sin cubrir el rostro.
+    pincel.save();
+    pincel.strokeStyle='rgba(144,255,127,0.40)';
+    pincel.lineWidth=1;
+    const largo=Math.min(15,ancho*.15);
+    for(const [cx,cy,dx,dy] of [
+      [x,y,1,1],[x+ancho,y,-1,1],[x,y+alto,1,-1],[x+ancho,y+alto,-1,-1]
+    ]){
+      pincel.beginPath();pincel.moveTo(cx,cy+dy*largo);
+      pincel.lineTo(cx,cy);pincel.lineTo(cx+dx*largo,cy);pincel.stroke();
+    }
+    pincel.fillStyle='rgba(144,255,127,.48)';
+    pincel.font='10px monospace';
+    pincel.fillText('TRACKING',x,Math.max(12,y-7));
+    pincel.restore();
+  }else{rostroCentroAnterior=null;movimientoAnterior=0;}
+  // Palma abierta = cuatro dedos extendidos (índice, medio, anular y meñique).
+  // Se exige persistencia para evitar activaciones accidentales.
+  let palmaDetectada=false, punioDetectado=false;
+  if(detectorMano){
+    try{
+      const manos=detectorMano.detectForVideo(video,ahora);
+      for(const puntosMano of manos.landmarks){
+        const distancia=(a,b)=>Math.hypot(puntosMano[a].x-puntosMano[b].x,puntosMano[a].y-puntosMano[b].y);
+        const dedos=[[8,5],[12,9],[16,13],[20,17]];
+        const extendidos=dedos.filter(([punta,base])=>distancia(punta,0)>distancia(base,0)*1.36).length;
+        // Puño: las cuatro puntas están recogidas cerca de las bases de los dedos.
+        // Usamos distancias relativas a la muñeca; no inferimos la orientación de la palma.
+        const recogidos=dedos.filter(([punta,base])=>distancia(punta,0)<distancia(base,0)*1.14).length;
+        const compacto=distancia(8,9)<distancia(9,0)*1.15 && distancia(20,17)<distancia(17,0)*1.15;
+        if(recogidos>=3 && compacto){punioDetectado=true;break;}
+        if(extendidos>=4){palmaDetectada=true;break;}
+      }
+    }catch(error){console.warn('Error en seguimiento de mano',error);}
+  }
+  framesPalma=Math.max(0,Math.min(5,framesPalma+(palmaDetectada?1:-1)));
+  framesPunio=Math.max(0,Math.min(5,framesPunio+(punioDetectado?1:-1)));
+  window.fistClosed=framesPunio>=3;
+  window.palmOpen=framesPalma>=3 && !window.fistClosed;
+}
+
+rastrearRostro();
+</script>
+</body></html>
